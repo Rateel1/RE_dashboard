@@ -105,6 +105,11 @@ div[data-testid="stForm"] * {
 """, unsafe_allow_html=True)
 
 
+
+
+# =======================
+# MODEL LOADING
+# =======================
 @st.cache_resource
 def load_model():
     return joblib.load("XGBM_DB_last.joblib")
@@ -116,16 +121,36 @@ def load_model_columns():
 model = load_model()
 model_columns = load_model_columns()
 
+# =======================
+# FIXED PREDICT FUNCTION
+# =======================
 def predict_price(new_record):
+    # Convert record to DataFrame
     new_record_df = pd.DataFrame([new_record])
+
+    # Encode categorical features
     new_record_df = pd.get_dummies(new_record_df)
+
+    # ✅ Ensure lat/lng columns are preserved before aligning
+    for col in ['location.lat', 'location.lng']:
+        if col not in new_record_df.columns and col in new_record:
+            new_record_df[col] = new_record[col]
+
+    # ✅ Ensure all expected model columns exist
     for col in model_columns:
-        if col not in new_record_df:
+        if col not in new_record_df.columns:
             new_record_df[col] = 0
+
+    # ✅ Align column order
     new_record_df = new_record_df[model_columns].astype(float)
+
+    # Predict log price, then exponentiate
     log_price = model.predict(new_record_df)[0]
     return np.expm1(log_price)
 
+# =======================
+# HELPER FUNCTION
+# =======================
 def haversine_distance(lat1, lng1, lat2, lng2):
     R = 6371
     dlat = radians(lat2 - lat1)
@@ -134,15 +159,21 @@ def haversine_distance(lat1, lng1, lat2, lng2):
     c = 2 * atan2(sqrt(a), sqrt(1-a))
     return R * c
 
+# =======================
+# LOAD DISTRICTS DATA
+# =======================
 district_centers = pd.read_excel("district_centers.xlsx").dropna(subset=['district'])
 
+# Default Riyadh center
 riyadh_lat, riyadh_lng = 24.7136, 46.6753
 st.session_state.setdefault('location_lat', float(riyadh_lat))
 st.session_state.setdefault('location_lng', float(riyadh_lng))
 st.session_state.setdefault('location_manually_set', False)
 st.session_state.setdefault('selected_district', district_centers.iloc[0]['district'])
 
-
+# =======================
+# STREAMLIT UI
+# =======================
 col1, col2 = st.columns([1, 2])
 
 with col1:
@@ -154,82 +185,105 @@ with col1:
         st.session_state['location_lat'] = selected_row['location.lat']
         st.session_state['location_lng'] = selected_row['location.lng']
 
-    m = folium.Map(location=[st.session_state['location_lat'], st.session_state['location_lng']], zoom_start=12, tiles="CartoDB positron", control_scale=True)
+    m = folium.Map(
+        location=[st.session_state['location_lat'], st.session_state['location_lng']],
+        zoom_start=12,
+        tiles="CartoDB positron",
+        control_scale=True
+    )
+
     m.add_child(MeasureControl(primary_length_unit='kilometers'))
     m.add_child(MousePosition(position='bottomright'))
 
-    marker = folium.Marker(location=[st.session_state['location_lat'], st.session_state['location_lng']],
-                           draggable=True, icon=folium.Icon(color="red", icon="map-marker"))
+    marker = folium.Marker(
+        location=[st.session_state['location_lat'], st.session_state['location_lng']],
+        draggable=True,
+        icon=folium.Icon(color="red", icon="map-marker")
+    )
     marker.add_to(m)
 
     map_data = st_folium(m, width=700, height=450)
+
     if map_data.get('last_clicked'):
         st.session_state['location_lat'] = map_data['last_clicked']['lat']
         st.session_state['location_lng'] = map_data['last_clicked']['lng']
         st.session_state['location_manually_set'] = True
+
         distances = district_centers.apply(
-            lambda row: haversine_distance(st.session_state['location_lat'], st.session_state['location_lng'],
-                                           row['location.lat'], row['location.lng']), axis=1)
+            lambda row: haversine_distance(
+                st.session_state['location_lat'], st.session_state['location_lng'],
+                row['location.lat'], row['location.lng']
+            ),
+            axis=1
+        )
         st.session_state['selected_district'] = district_centers.loc[distances.idxmin(), 'district']
 
     st.success(f"📌 الموقع المحدد: {st.session_state['location_lat']:.4f}, {st.session_state['location_lng']:.4f}")
 
 with col2:
-   
     st.markdown("<h1 style='font-size:2.4rem;'>🏠 أدخل تفاصيل المنزل لتقدير قيمته السوقية</h1>", unsafe_allow_html=True)
 
     with st.form("house_details_form"):
         col_a, col_b = st.columns(2)
-   
+
         with col_a:
-           
             st.markdown("<label style='font-size:1rem; font-weight:bold;'>عدد غرف المعيشة 🛋️</label>", unsafe_allow_html=True)
             livings = st.selectbox("", list(range(1, 8)), key="livings")
-           
+
             st.markdown("<label style='font-size:1rem; font-weight:bold;'>المساحة (متر مربع) 📏</label>", unsafe_allow_html=True)
             area = st.number_input("", 150.0, 600.0, 150.0, key="area")
-            st.markdown("<label style='font-size:1.8rem;'>اختر الحي 🏙️</label>", unsafe_allow_html=True)
-            district = st.selectbox("", district_centers['district'].unique().tolist(),
-                                index=district_centers['district'].tolist().index(st.session_state['selected_district']),
-                                key="district")
 
-       
+            st.markdown("<label style='font-size:1.8rem;'>اختر الحي 🏙️</label>", unsafe_allow_html=True)
+            district = st.selectbox(
+                "",
+                district_centers['district'].unique().tolist(),
+                index=district_centers['district'].tolist().index(st.session_state['selected_district']),
+                key="district"
+            )
 
         with col_b:
             st.markdown("<label style='font-size:1rem; font-weight:bold;'>عرض الشارع (متر) 🛣️</label>", unsafe_allow_html=True)
             street_width = st.selectbox("", [10, 12, 15, 18, 20, 25], key="street_width")
+
             st.markdown("<label style='font-size:1rem; font-weight:bold;'>عمر العقار 🗓️</label>", unsafe_allow_html=True)
             age = st.selectbox("", list(range(0, 6)), key="age")
-            st.markdown("<label style='font-size:1rem; font-weight:bold;'>نوع الواجهة 🧭 </label>", unsafe_allow_html=True)
-            street_direction = st.selectbox("", [
-                "واجهة شمالية", "واجهة شرقية", "واجهة غربية", "واجهة جنوبية",
-                "واجهة شمالية شرقية", "واجهة جنوبية شرقية", "واجهة جنوبية غربية", "واجهة شمالية غربية"
-              
-            ], key="street_direction")
-           
 
+            st.markdown("<label style='font-size:1rem; font-weight:bold;'>نوع الواجهة 🧭</label>", unsafe_allow_html=True)
+            street_direction = st.selectbox(
+                "",
+                [
+                    "واجهة شمالية", "واجهة شرقية", "واجهة غربية", "واجهة جنوبية",
+                    "واجهة شمالية شرقية", "واجهة جنوبية شرقية",
+                    "واجهة جنوبية غربية", "واجهة شمالية غربية"
+                ],
+                key="street_direction"
+            )
+
+        # Auto-reset location if user didn't move map
         if not st.session_state['location_manually_set']:
             row = district_centers[district_centers['district'] == district].iloc[0]
             st.session_state['location_lat'] = row['location.lat']
             st.session_state['location_lng'] = row['location.lng']
+
         st.session_state['selected_district'] = district
-        
-       
+
         submitted = st.form_submit_button(" حساب القيمة التقديرية 🔮")
 
-           
         if submitted:
             with st.spinner('جاري الحساب...'):
                 input_data = {
-                     'livings': livings, 'area': area,
-                    'street_width': street_width, 'age': age, 'street_direction': street_direction,
-                   
+                    'livings': livings,
+                    'area': area,
+                    'street_width': street_width,
+                    'age': age,
+                    'street_direction': street_direction,
                     'location.lat': st.session_state['location_lat'],
                     'location.lng': st.session_state['location_lng'],
                     'district': district
                 }
+
                 price = predict_price(input_data)
-                st.success("تمت عملية التوقع بنجاح!")
+                st.success("✅ تمت عملية التوقع بنجاح!")
                 st.metric("السعر التقريبي", f"ريال {price:,.2f}")
 
     
