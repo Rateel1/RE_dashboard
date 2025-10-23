@@ -105,9 +105,6 @@ div[data-testid="stForm"] * {
 """, unsafe_allow_html=True)
 
 
-
-
-# =======================
 # MODEL LOADING
 # =======================
 @st.cache_resource
@@ -122,34 +119,33 @@ model = load_model()
 model_columns = load_model_columns()
 
 # =======================
-# FIXED PREDICT FUNCTION
+# PREDICT FUNCTION (UPDATED)
 # =======================
 def predict_price(new_record):
-    # Convert record to DataFrame
     new_record_df = pd.DataFrame([new_record])
 
-    # Encode categorical features
+    # Encode categorical variables
     new_record_df = pd.get_dummies(new_record_df)
 
-    # ✅ Ensure lat/lng columns are preserved before aligning
+    # Ensure coordinates are preserved
     for col in ['location.lat', 'location.lng']:
         if col not in new_record_df.columns and col in new_record:
             new_record_df[col] = new_record[col]
 
-    # ✅ Ensure all expected model columns exist
+    # Add missing columns as zeros
     for col in model_columns:
         if col not in new_record_df.columns:
             new_record_df[col] = 0
 
-    # ✅ Align column order
+    # Align order & cast to float
     new_record_df = new_record_df[model_columns].astype(float)
 
-    # Predict log price, then exponentiate
+    # Predict log price and revert transformation
     log_price = model.predict(new_record_df)[0]
     return np.expm1(log_price)
 
 # =======================
-# HELPER FUNCTION
+# HELPER FUNCTIONS
 # =======================
 def haversine_distance(lat1, lng1, lat2, lng2):
     R = 6371
@@ -160,7 +156,7 @@ def haversine_distance(lat1, lng1, lat2, lng2):
     return R * c
 
 # =======================
-# LOAD DISTRICTS DATA
+# LOAD DISTRICTS
 # =======================
 district_centers = pd.read_excel("district_centers.xlsx").dropna(subset=['district'])
 
@@ -176,6 +172,7 @@ st.session_state.setdefault('selected_district', district_centers.iloc[0]['distr
 # =======================
 col1, col2 = st.columns([1, 2])
 
+# -------- MAP --------
 with col1:
     st.markdown("<h1 style='font-size:2.4rem;'>📍 اختر الموقع</h1>", unsafe_allow_html=True)
 
@@ -204,11 +201,13 @@ with col1:
 
     map_data = st_folium(m, width=700, height=450)
 
+    # Update coordinates if user clicks on map
     if map_data.get('last_clicked'):
         st.session_state['location_lat'] = map_data['last_clicked']['lat']
         st.session_state['location_lng'] = map_data['last_clicked']['lng']
         st.session_state['location_manually_set'] = True
 
+        # Find nearest district to clicked location
         distances = district_centers.apply(
             lambda row: haversine_distance(
                 st.session_state['location_lat'], st.session_state['location_lng'],
@@ -220,6 +219,7 @@ with col1:
 
     st.success(f"📌 الموقع المحدد: {st.session_state['location_lat']:.4f}, {st.session_state['location_lng']:.4f}")
 
+# -------- FORM --------
 with col2:
     st.markdown("<h1 style='font-size:2.4rem;'>🏠 أدخل تفاصيل المنزل لتقدير قيمته السوقية</h1>", unsafe_allow_html=True)
 
@@ -230,10 +230,10 @@ with col2:
             st.markdown("<label style='font-size:1rem; font-weight:bold;'>عدد غرف المعيشة 🛋️</label>", unsafe_allow_html=True)
             livings = st.selectbox("", list(range(1, 8)), key="livings")
 
-            st.markdown("<label style='font-size:1rem; font-weight:bold;'>المساحة (متر مربع) 📏</label>", unsafe_allow_html=True)
+            st.markdown("<label style='font-size:1rem; font-weight:bold;'>المساحة (م²) 📏</label>", unsafe_allow_html=True)
             area = st.number_input("", 150.0, 600.0, 150.0, key="area")
 
-            st.markdown("<label style='font-size:1.8rem;'>اختر الحي 🏙️</label>", unsafe_allow_html=True)
+            st.markdown("<label style='font-size:1rem; font-weight:bold;'>اختر الحي 🏙️</label>", unsafe_allow_html=True)
             district = st.selectbox(
                 "",
                 district_centers['district'].unique().tolist(),
@@ -259,7 +259,7 @@ with col2:
                 key="street_direction"
             )
 
-        # Auto-reset location if user didn't move map
+        # Auto-update map location if user hasn't manually moved it
         if not st.session_state['location_manually_set']:
             row = district_centers[district_centers['district'] == district].iloc[0]
             st.session_state['location_lat'] = row['location.lat']
@@ -267,7 +267,7 @@ with col2:
 
         st.session_state['selected_district'] = district
 
-        submitted = st.form_submit_button(" حساب القيمة التقديرية 🔮")
+        submitted = st.form_submit_button("🔮 حساب القيمة التقديرية")
 
         if submitted:
             with st.spinner('جاري الحساب...'):
@@ -285,8 +285,6 @@ with col2:
                 price = predict_price(input_data)
                 st.success("✅ تمت عملية التوقع بنجاح!")
                 st.metric("السعر التقريبي", f"ريال {price:,.2f}")
-
-    
 
 
 st.markdown("<h1 style='font-size:2.4rem;'>📊 الرؤى واتجاهات السوق العقاري</h1>", unsafe_allow_html=True)
