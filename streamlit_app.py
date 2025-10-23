@@ -104,6 +104,8 @@ div[data-testid="stForm"] * {
 </style>
 """, unsafe_allow_html=True)
 
+
+
 # =======================
 # MODEL LOADING
 # =======================
@@ -123,11 +125,9 @@ model_columns = load_model_columns()
 # =======================
 def predict_price(new_record):
     df = pd.DataFrame([new_record])
-
-    # Ensure all expected columns exist
     df = pd.get_dummies(df)
 
-    # ✅ Reinsert coordinates as float
+    # ✅ Preserve numeric coordinates
     for coord in ['location.lat', 'location.lng']:
         if coord not in df.columns:
             df[coord] = float(new_record.get(coord, 0))
@@ -137,41 +137,159 @@ def predict_price(new_record):
         if col not in df.columns:
             df[col] = 0
 
-    # Align and ensure numeric dtype
     df = df[model_columns].astype(float)
-
-    # Predict
     log_price = model.predict(df)[0]
     return np.expm1(log_price)
 
 # =======================
-# STREAMLIT UI (Fix for Coordinates)
+# HELPER FUNCTION
 # =======================
-if map_data.get('last_clicked'):
-    st.session_state['location_lat'] = float(map_data['last_clicked']['lat'])
-    st.session_state['location_lng'] = float(map_data['last_clicked']['lng'])
-    st.session_state['location_manually_set'] = True
+def haversine_distance(lat1, lng1, lat2, lng2):
+    R = 6371
+    dlat = radians(lat2 - lat1)
+    dlng = radians(lng2 - lng1)
+    a = sin(dlat / 2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlng / 2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    return R * c
 
-# When submitting
-if submitted:
-    with st.spinner('جاري الحساب...'):
-        input_data = {
-            'livings': livings,
-            'area': area,
-            'street_width': street_width,
-            'age': age,
-            'street_direction': street_direction,
-            'location.lat': float(st.session_state['location_lat']),
-            'location.lng': float(st.session_state['location_lng']),
-            'district': district
-        }
+# =======================
+# LOAD DISTRICT DATA
+# =======================
+district_centers = pd.read_excel("district_centers.xlsx").dropna(subset=['district'])
 
-        # Debug check
-        st.write("🔍 Coordinates used:", input_data['location.lat'], input_data['location.lng'])
+# Default Riyadh center
+riyadh_lat, riyadh_lng = 24.7136, 46.6753
+st.session_state.setdefault('location_lat', float(riyadh_lat))
+st.session_state.setdefault('location_lng', float(riyadh_lng))
+st.session_state.setdefault('location_manually_set', False)
+st.session_state.setdefault('selected_district', district_centers.iloc[0]['district'])
 
-        price = predict_price(input_data)
-        st.success("✅ تمت عملية التوقع بنجاح!")
-        st.metric("السعر التقريبي", f"ريال {price:,.2f}")
+# =======================
+# STREAMLIT UI
+# =======================
+col1, col2 = st.columns([1, 2])
+
+with col1:
+    st.markdown("<h1 style='font-size:2.4rem;'>📍 اختر الموقع</h1>", unsafe_allow_html=True)
+
+    if st.button("🔁 إعادة تعيين الموقع"):
+        st.session_state['location_manually_set'] = False
+        selected_row = district_centers[district_centers['district'] == st.session_state['selected_district']].iloc[0]
+        st.session_state['location_lat'] = selected_row['location.lat']
+        st.session_state['location_lng'] = selected_row['location.lng']
+
+    m = folium.Map(
+        location=[st.session_state['location_lat'], st.session_state['location_lng']],
+        zoom_start=12,
+        tiles="CartoDB positron",
+        control_scale=True
+    )
+    m.add_child(MeasureControl(primary_length_unit='kilometers'))
+    m.add_child(MousePosition(position='bottomright'))
+
+    marker = folium.Marker(
+        location=[st.session_state['location_lat'], st.session_state['location_lng']],
+        draggable=True,
+        icon=folium.Icon(color="red", icon="map-marker")
+    )
+    marker.add_to(m)
+
+    # ✅ Always initialize map_data
+    map_data = st_folium(m, width=700, height=450)
+
+    # ✅ Safely handle map clicks
+    if map_data and map_data.get('last_clicked'):
+        last_click = map_data['last_clicked']
+        st.session_state['location_lat'] = float(last_click.get('lat', st.session_state['location_lat']))
+        st.session_state['location_lng'] = float(last_click.get('lng', st.session_state['location_lng']))
+        st.session_state['location_manually_set'] = True
+
+        # Update district based on proximity
+        distances = district_centers.apply(
+            lambda row: haversine_distance(
+                st.session_state['location_lat'], st.session_state['location_lng'],
+                row['location.lat'], row['location.lng']
+            ),
+            axis=1
+        )
+        st.session_state['selected_district'] = district_centers.loc[distances.idxmin(), 'district']
+
+    st.success(f"📌 الموقع المحدد: {st.session_state['location_lat']:.4f}, {st.session_state['location_lng']:.4f}")
+
+with col2:
+    st.markdown("<h1 style='font-size:2.4rem;'>🏠 أدخل تفاصيل المنزل لتقدير قيمته السوقية</h1>", unsafe_allow_html=True)
+
+    with st.form("house_details_form"):
+        col_a, col_b = st.columns(2)
+
+        with col_a:
+            st.markdown("<label style='font-size:1rem; font-weight:bold;'>عدد غرف المعيشة 🛋️</label>", unsafe_allow_html=True)
+            livings = st.selectbox("", list(range(1, 8)), key="livings")
+
+            st.markdown("<label style='font-size:1rem; font-weight:bold;'>المساحة (متر مربع) 📏</label>", unsafe_allow_html=True)
+            area = st.number_input("", 150.0, 600.0, 150.0, key="area")
+
+            st.markdown("<label style='font-size:1.8rem;'>اختر الحي 🏙️</label>", unsafe_allow_html=True)
+            district = st.selectbox(
+                "",
+                district_centers['district'].unique().tolist(),
+                index=district_centers['district'].tolist().index(st.session_state['selected_district']),
+                key="district"
+            )
+
+        with col_b:
+            st.markdown("<label style='font-size:1rem; font-weight:bold;'>عرض الشارع (متر) 🛣️</label>", unsafe_allow_html=True)
+            street_width = st.selectbox("", [10, 12, 15, 18, 20, 25], key="street_width")
+
+            st.markdown("<label style='font-size:1rem; font-weight:bold;'>عمر العقار 🗓️</label>", unsafe_allow_html=True)
+            age = st.selectbox("", list(range(0, 6)), key="age")
+
+            st.markdown("<label style='font-size:1rem; font-weight:bold;'>نوع الواجهة 🧭</label>", unsafe_allow_html=True)
+            street_direction = st.selectbox(
+                "",
+                [
+                    "واجهة شمالية", "واجهة شرقية", "واجهة غربية", "واجهة جنوبية",
+                    "واجهة شمالية شرقية", "واجهة جنوبية شرقية",
+                    "واجهة جنوبية غربية", "واجهة شمالية غربية"
+                ],
+                key="street_direction"
+            )
+
+        # ✅ If user didn’t move the map, use district center
+        if not st.session_state['location_manually_set']:
+            row = district_centers[district_centers['district'] == district].iloc[0]
+            st.session_state['location_lat'] = float(row['location.lat'])
+            st.session_state['location_lng'] = float(row['location.lng'])
+
+        st.session_state['selected_district'] = district
+
+        submitted = st.form_submit_button(" حساب القيمة التقديرية 🔮")
+
+        if submitted:
+            with st.spinner('جاري الحساب...'):
+                input_data = {
+                    'livings': livings,
+                    'area': area,
+                    'street_width': street_width,
+                    'age': age,
+                    'street_direction': street_direction,
+                    'location.lat': float(st.session_state['location_lat']),
+                    'location.lng': float(st.session_state['location_lng']),
+                    'district': district
+                }
+
+                price = predict_price(input_data)
+                st.success("✅ تمت عملية التوقع بنجاح!")
+                st.metric("السعر التقريبي", f"ريال {price:,.2f}")
+
+# =======================
+# DEBUG SIDEBAR
+# =======================
+with st.sidebar:
+    st.header("🧭 Debug Panel")
+    st.write("Latitude:", st.session_state['location_lat'])
+    st.write("Longitude:", st.session_state['location_lng'])
+    st.write("Selected District:", st.session_state['selected_district'])
 
 
 st.markdown("<h1 style='font-size:2.4rem;'>📊 الرؤى واتجاهات السوق العقاري</h1>", unsafe_allow_html=True)
