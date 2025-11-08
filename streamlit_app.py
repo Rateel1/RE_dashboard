@@ -591,6 +591,4 @@ with col5:
 
 # Footer
 st.markdown("---")
-streamlit_app.py
 
-جارٍ عرض streamlit_app.py.
